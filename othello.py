@@ -1,4 +1,5 @@
 import copy
+
 # ── Board constants ──────────────────────────────────────────────────────────
 SIZE = 8
 EMPTY = '.'
@@ -7,29 +8,14 @@ WHITE = 'W'
 
 DIRECTIONS = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
 
-# ── ANSI colours ─────────────────────────────────────────────────────────────
-RESET  = "\033[0m"
-BOLD   = "\033[1m"
-DIM    = "\033[2m"
-GREEN  = "\033[32m"
-YELLOW = "\033[33m"
-CYAN   = "\033[36m"
-BG_GREEN  = "\033[42m"
-BG_BLACK  = "\033[40m"
-BG_GRAY   = "\033[100m"
-
-def clear_screen():
-    # Fallback: print 50 newlines if os.system is not allowed
-    print("\n" * 50)
-
-# ── Board helpers ─────────────────────────────────────────────────────────────
+# ── Board helpers ───────────────────────────────────────────────────────────
 def make_board():
     board = [[EMPTY]*SIZE for _ in range(SIZE)]
     mid = SIZE // 2
     board[mid-1][mid-1] = WHITE
-    board[mid][mid]     = WHITE
-    board[mid-1][mid]   = BLACK
-    board[mid][mid-1]   = BLACK
+    board[mid][mid] = WHITE
+    board[mid-1][mid] = BLACK
+    board[mid][mid-1] = BLACK
     return board
 
 def opponent(color):
@@ -42,10 +28,12 @@ def flips_in_dir(board, r, c, dr, dc, color):
     opp = opponent(color)
     cells = []
     nr, nc = r + dr, c + dc
+
     while in_bounds(nr, nc) and board[nr][nc] == opp:
         cells.append((nr, nc))
         nr += dr
         nc += dc
+
     if cells and in_bounds(nr, nc) and board[nr][nc] == color:
         return cells
     return []
@@ -53,6 +41,7 @@ def flips_in_dir(board, r, c, dr, dc, color):
 def get_flips(board, r, c, color):
     if board[r][c] != EMPTY:
         return []
+
     flips = []
     for dr, dc in DIRECTIONS:
         flips += flips_in_dir(board, r, c, dr, dc, color)
@@ -66,10 +55,13 @@ def make_move(board, r, c, color):
     flips = get_flips(board, r, c, color)
     if not flips:
         return None
-    nb = copy.deepcopy(board)
+
+    nb = [row[:] for row in board]
     nb[r][c] = color
+
     for fr, fc in flips:
         nb[fr][fc] = color
+
     return nb
 
 def count(board):
@@ -80,122 +72,148 @@ def count(board):
 def is_game_over(board):
     return not valid_moves(board, BLACK) and not valid_moves(board, WHITE)
 
-# ── Display ───────────────────────────────────────────────────────────────────
-DISC_B = f"{BG_BLACK}{BOLD} ● {RESET}"
-DISC_W = f"{BG_GRAY}{BOLD} ○ {RESET}"
-DISC_E = f"{BG_GREEN} · {RESET}"
-DISC_H = f"{BG_GREEN}{YELLOW}{BOLD} + {RESET}"
+# ── AI EVALUATION ───────────────────────────────────────────────────────────
+def evaluate_board(board, color):
+    opp = opponent(color)
+    black, white = count(board)
 
-def render_board(board, color=None):
-    moves = set(valid_moves(board, color)) if color else set()
-    col_labels = "    " + " ".join(f"{CYAN} {chr(65+c)} {RESET}" for c in range(SIZE))
-    print(col_labels)
-    print(f"   {DIM}┌{'───┬'*(SIZE-1)}───┐{RESET}")
-    for r in range(SIZE):
-        row_str = f" {CYAN}{r+1}{RESET} {DIM}│{RESET}"
-        for c in range(SIZE):
-            val = board[r][c]
-            if val == BLACK:
-                row_str += DISC_B
-            elif val == WHITE:
-                row_str += DISC_W
-            elif (r, c) in moves:
-                row_str += DISC_H
-            else:
-                row_str += DISC_E
-            row_str += f"{DIM}│{RESET}"
-        print(row_str)
-        if r < SIZE - 1:
-            print(f"   {DIM}├{'───┼'*(SIZE-1)}───┤{RESET}")
-    print(f"   {DIM}└{'───┴'*(SIZE-1)}───┘{RESET}")
+    score = (black - white) if color == BLACK else (white - black)
 
-def render_status(board, current):
-    b, w = count(board)
-    sym_b = f"{BG_BLACK}{BOLD} ● {RESET}"
-    sym_w = f"{BG_GRAY}{BOLD} ○ {RESET}"
-    turn_marker = lambda c: f" {YELLOW}◀ to move{RESET}" if c == current else ""
-    print(f"\n  {sym_b} Black: {BOLD}{b}{RESET}{turn_marker(BLACK)}   "
-          f"{sym_w} White: {BOLD}{w}{RESET}{turn_marker(WHITE)}")
-    label = 'Black (●)' if current == BLACK else 'White (○)'
-    print(f"\n  {GREEN}» {label}'s turn{RESET}  {DIM}[type col+row e.g. D3, or 'quit']{RESET}\n")
+    # corner importance
+    corners = [(0,0),(0,7),(7,0),(7,7)]
+    corner_score = 0
 
-# ── Input parsing ─────────────────────────────────────────────────────────────
-def parse_move(text):
-    text = text.strip().upper()
-    if len(text) != 2:
-        return None
-    if text[0].isalpha() and text[1].isdigit():
-        c = ord(text[0]) - ord('A')
-        r = int(text[1]) - 1
-    elif text[0].isdigit() and text[1].isalpha():
-        r = int(text[0]) - 1
-        c = ord(text[1]) - ord('A')
+    for r, c in corners:
+        if board[r][c] == color:
+            corner_score += 25
+        elif board[r][c] == opp:
+            corner_score -= 25
+
+    return score + corner_score
+
+# ── MINIMAX AI ──────────────────────────────────────────────────────────────
+def minimax(board, depth, maximizing, color, alpha, beta):
+    if depth == 0 or is_game_over(board):
+        return evaluate_board(board, color), None
+
+    moves = valid_moves(board, color if maximizing else opponent(color))
+
+    if not moves:
+        return evaluate_board(board, color), None
+
+    best_move = None
+
+    if maximizing:
+        max_eval = float('-inf')
+
+        for move in moves:
+            new_board = make_move(board, move[0], move[1], color)
+            eval_score, _ = minimax(new_board, depth-1, False, color, alpha, beta)
+
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+
+        return max_eval, best_move
+
     else:
-        return None
-    if in_bounds(r, c):
-        return r, c
-    return None
+        min_eval = float('inf')
 
-# ── Game loop ─────────────────────────────────────────────────────────────────
-def game_loop():
+        for move in moves:
+            new_board = make_move(board, move[0], move[1], opponent(color))
+            eval_score, _ = minimax(new_board, depth-1, True, color, alpha, beta)
+
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+
+        return min_eval, best_move
+
+def best_ai_move(board, color, depth=4):
+    _, move = minimax(board, depth, True, color, float('-inf'), float('inf'))
+    return move
+
+# ── GAME LOOP ───────────────────────────────────────────────────────────────
+def game_loop(vs_ai=True):
     board = make_board()
     current = BLACK
 
     while True:
-        clear_screen()
-        print(f"\n  {BOLD}{CYAN}╔══════════════════╗")
-        print(f"  ║   O T H E L L O  ║")
-        print(f"  ╚══════════════════╝{RESET}\n")
-        render_board(board, current)
-        render_status(board, current)
 
         moves = valid_moves(board, current)
 
         if is_game_over(board):
             b, w = count(board)
-            print(f"\n  {BOLD}Game Over!{RESET}")
-            if b > w:
-                print(f"  {GREEN}Black (●) wins! {b}–{w}{RESET}")
-            elif w > b:
-                print(f"  {GREEN}White (○) wins! {w}–{b}{RESET}")
-            else:
-                print(f"  {YELLOW}It's a draw! {b}–{w}{RESET}")
+            print("\nGame Over!")
+            print(f"Black: {b}  White: {w}")
             return
 
         if not moves:
-            input(f"  {YELLOW}No moves for {current} — press Enter to pass.{RESET}")
             current = opponent(current)
             continue
 
+        # ── AI TURN ──
+        if vs_ai and current == WHITE:
+            print("\nAI thinking...\n")
+
+            move = best_ai_move(board, WHITE, depth=4)
+
+            if move:
+                board = make_move(board, move[0], move[1], WHITE)
+
+            current = opponent(current)
+            continue
+
+        # ── HUMAN TURN ──
+        print_board(board, moves)
+
         while True:
-            raw = input(f"  {BOLD}>{RESET} ").strip().lower()
-            if raw in ('q', 'quit', 'exit'):
-                return False # Signal to stop completely
-            
+            raw = input("Enter move (e.g. D3): ").strip().upper()
+
             pos = parse_move(raw)
+
             if pos and pos in moves:
                 board = make_move(board, pos[0], pos[1], current)
                 current = opponent(current)
                 break
-            print(f"  {YELLOW}Invalid or illegal move. Try again.{RESET}")
 
-def main():
-    while True:
-        clear_screen()
-        print(f"\n  {BOLD}{CYAN}╔══════════════════╗")
-        print(f"  ║   O T H E L L O  ║")
-        print(f"  ╚══════════════════╝{RESET}\n")
-        print(f"\n  {BOLD}{CYAN}OTHELLO - Local Multiplayer{RESET}")
-        print(f"\n  {GREEN}s{RESET} · Start Game")
-        print(f"  {GREEN}q{RESET} · Quit")
-        
-        choice = input(f"\n  {BOLD}>{RESET} ").strip().lower()
-        if choice == 's':
-            if game_loop() is False:
-                break
-            input(f"\n  Press Enter to return to menu...")
-        elif choice == 'q':
-            break
+            print("Invalid move")
 
-if __name__ == '__main__':
-    main()
+# ── DISPLAY ─────────────────────────────────────────────────────────────────
+def print_board(board, moves):
+    print("\n  A B C D E F G H")
+    for r in range(SIZE):
+        row = str(r+1) + " "
+        for c in range(SIZE):
+            if board[r][c] == BLACK:
+                row += "B "
+            elif board[r][c] == WHITE:
+                row += "W "
+            elif (r, c) in moves:
+                row += "+ "
+            else:
+                row += ". "
+        print(row)
+
+def parse_move(text):
+    if len(text) != 2:
+        return None
+
+    c = ord(text[0]) - ord('A')
+    r = int(text[1]) - 1
+
+    if in_bounds(r, c):
+        return r, c
+    return None
+
+# ── RUN GAME ────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    game_loop(vs_ai=True)
